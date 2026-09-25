@@ -25,6 +25,10 @@ class IncomingEmail(BaseModel):
     body: str = Field(min_length=1, max_length=5000)
 
 
+class EmailAnalysisRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=10000)
+
+
 class StoredEmail(BaseModel):
     id: str
     sender: str
@@ -67,6 +71,13 @@ def home(request: Request) -> HTMLResponse:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/analyze")
+def analyze_email(request: EmailAnalysisRequest) -> dict:
+    from src.engine import analyze_email_pipeline
+
+    return analyze_email_pipeline(request.text)
 
 
 @app.get("/api/emails")
