@@ -4,6 +4,19 @@ This project trains a spam-vs-ham classifier from your mail dataset using a clas
 - TF-IDF vectorization (word unigrams + bigrams)
 - Logistic Regression classifier
 
+## Architecture
+
+The dashboard combines several focused models and NLP stages:
+
+- **RoBERTa** analyzes emotion and urgency sentence by sentence.
+- **spaCy** extracts named entities and useful noun phrases.
+- **scikit-learn** provides spam detection and topic classification using TF-IDF and Logistic Regression.
+- **FastAPI** serves the analysis API and the interactive inbox dashboard.
+
+![Email-Insights dashboard preview](docs/dashboard-screenshot.svg)
+
+The dashboard is designed for inspecting an inbox stream, reviewing model insights, uploading email text, and running custom analysis.
+
 ## Project Structure
 
 - `data/spam_ham_dataset.csv` - dataset copy

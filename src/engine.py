@@ -38,15 +38,70 @@ if vectorizer_path.exists() and model_path.exists():
 # Assumes your spam model was trained with scikit-learn
 spam_model = joblib.load(MODELS_DIR / "spam_classifier.joblib")
 
-EMOTION_LABELS = [
-    "positive_appreciation",
-    "frustration_complaint",
+NEGATIVE_EMOTION_LABELS = {
+    "anger",
+    "annoyance",
+    "fear",
+    "disgust",
+    "sadness",
     "anxiety_urgency",
-    "inquiry_curiosity",
-    "empathy_support",
-    "surprise_realization",
-    "neutral",
-]
+    "frustration_complaint",
+}
+POSITIVE_EMOTION_LABELS = {"joy", "optimism", "gratitude", "positive_appreciation", "empathy_support"}
+ESCALATION_KEYWORDS = (
+    "urgent",
+    "immediately",
+    "asap",
+    "critical",
+    "emergency",
+    "failed",
+    "fail",
+    "deadline",
+    "escalat",
+    "before we lose",
+    "drop everything",
+    "at risk",
+)
+
+
+def _peak_emotion_scores(email_text: str) -> tuple[float, float, bool]:
+    doc = nlp(email_text)
+    sentences = [sent.text.strip() for sent in doc.sents if len(sent.text.strip()) >= 5]
+    if not sentences:
+        return 0.0, 0.0, False
+
+    negative_peak = 0.0
+    positive_peak = 0.0
+    lower_text = email_text.lower()
+    explicit_escalation = any(keyword in lower_text for keyword in ESCALATION_KEYWORDS)
+
+    for sentence in sentences:
+        inputs = tokenizer(sentence, return_tensors="pt", truncation=True, max_length=128, padding=True).to(device)
+        with torch.no_grad():
+            logits = emotion_model(**inputs).logits
+        probabilities = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+
+        if hasattr(emotion_model, "config") and hasattr(emotion_model.config, "id2label"):
+            score_map = {
+                str(emotion_model.config.id2label[idx]).lower(): float(prob)
+                for idx, prob in enumerate(probabilities)
+            }
+        else:
+            score_map = {label.lower(): float(prob) for label, prob in zip(["neutral"], probabilities[:1])}
+
+        negative_sentence_score = max(
+            (score_map.get(label, 0.0) for label in NEGATIVE_EMOTION_LABELS),
+            default=0.0,
+        )
+        positive_sentence_score = max(
+            (score_map.get(label, 0.0) for label in POSITIVE_EMOTION_LABELS),
+            default=0.0,
+        )
+
+        negative_peak = max(negative_peak, negative_sentence_score)
+        positive_peak = max(positive_peak, positive_sentence_score)
+
+    return negative_peak, positive_peak, explicit_escalation
 
 
 def _fallback_topic(email_text: str) -> str:
@@ -69,39 +124,19 @@ def analyze_email_pipeline(email_text: str):
         return {"is_spam": True, "status": "filtered", "message": "Flagged as SPAM by baseline filter"}
 
     doc = nlp(email_text)
-    sentences = [sent.text.strip() for sent in doc.sents if len(sent.text.strip()) > 3]
-    if not sentences:
-        sentences = [email_text]
+    peak_negative_score, peak_positive_score, explicit_escalation = _peak_emotion_scores(email_text)
 
-    max_probs = {label: 0.0 for label in EMOTION_LABELS}
-    for sent in sentences:
-        inputs = tokenizer(sent, return_tensors="pt", truncation=True, max_length=128, padding=True).to(device)
-        with torch.no_grad():
-            probs = torch.sigmoid(emotion_model(**inputs).logits).cpu().numpy()[0]
-
-        for i, label in enumerate(EMOTION_LABELS):
-            if probs[i] > max_probs[label]:
-                max_probs[label] = float(probs[i])
-
-    detected = {}
-    if max_probs["anxiety_urgency"] >= 0.28:
-        detected["anxiety_urgency"] = max_probs["anxiety_urgency"]
-    if max_probs["frustration_complaint"] >= 0.28:
-        detected["frustration_complaint"] = max_probs["frustration_complaint"]
-    if max_probs["positive_appreciation"] >= 0.40:
-        detected["positive_appreciation"] = max_probs["positive_appreciation"]
-
-    has_neg = "frustration_complaint" in detected or "anxiety_urgency" in detected
-    has_pos = "positive_appreciation" in detected
-
-    if has_neg:
+    if peak_negative_score >= 0.60 or explicit_escalation:
         tone = "Negative / Escalated"
-        priority = "P1 - Urgent" if "anxiety_urgency" in detected else "P2 - High"
-    elif has_pos:
-        tone = "Positive / Appreciative"
+        priority = "P1 - Urgent"
+    elif 0.35 <= peak_negative_score < 0.60:
+        tone = "Negative / Escalated"
+        priority = "P2 - High"
+    elif peak_positive_score >= 0.50 and peak_negative_score < 0.35:
+        tone = "Positive"
         priority = "P3 - Normal"
     else:
-        tone = "Neutral / Standard"
+        tone = "Neutral"
         priority = "P3 - Normal"
 
     if topic_vectorizer is not None and topic_clf is not None:
